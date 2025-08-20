@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>午夜追擊者・九宮格記憶工具（Web）</title>
+  <style>
+    :root{
+      --bg:#0f1115; --fg:#e6e6e6; --muted:#9aa4b2; --card:#13161c; --card-border:#242a36; --well:#0c0f14;
+    }
+    :root[data-theme="light"]{
+      --bg:#f6f7fb; --fg:#0e1116; --muted:#596273; --card:#ffffff; --card-border:#dfe5ee; --well:#f1f4f9;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{margin:0;background:var(--bg);color:var(--fg);font-family:ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans TC", Arial}
+    header{padding:20px;border-bottom:1px solid var(--card-border);position:sticky;top:0;background:color-mix(in oklab, var(--bg) 90%, transparent);backdrop-filter:blur(8px);display:flex;align-items:center;gap:12px}
+    h1{margin:0;font-size:18px;letter-spacing:.5px}
+    .spacer{flex:1}
+    button, select{background:var(--card);color:var(--fg);border:1px solid var(--card-border);border-radius:10px;padding:8px 12px;font-size:14px}
+    button{cursor:pointer}
+    button:hover{filter:brightness(1.05)}
+
+    main{padding:20px;display:grid;place-items:center}
+    .grid{display:grid;gap:12px;grid-template-columns:repeat(3, 220px);grid-auto-rows:220px}
+    .cell{background:var(--card);border:1px solid var(--card-border);border-radius:14px;padding:10px;display:flex;flex-direction:column}
+    .title{font-size:13px;color:var(--muted);margin-bottom:6px}
+    .imgbox{flex:1;display:grid;place-items:center;background:var(--well);border-radius:10px;overflow:hidden;border:1px dashed var(--card-border)}
+    .imgbox img{max-width:100%;max-height:100%;object-fit:contain;image-rendering:auto}
+    .picker{margin-top:8px}
+
+    /* 角落主題切換 */
+    .theme-toggle{position:fixed;right:16px;bottom:16px;border-radius:999px;padding:10px 12px;display:flex;align-items:center;gap:8px}
+    .theme-toggle .icon{font-size:16px}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>午夜追擊者・九宮格記憶工具（Web）</h1>
+    <div class="spacer"></div>
+    <button id="clear">清空欄位</button>
+  </header>
+
+  <main>
+    <div class="grid" id="grid" aria-live="polite"></div>
+  </main>
+
+  <button id="themeToggle" class="theme-toggle" title="切換深/淺色主題">
+    <span class="icon" id="themeIcon">🌙</span>
+    <span id="themeText">深色</span>
+  </button>
+
+  <script>
+    // ===== 相容性與本機運行優先 =====
+    // 為了避免在 file:// 下 fetch 被擋，預設直接使用內建選項。
+    // 若在 http/https 環境，才嘗試讀 options.json（讀不到就用內建）。
+    // 內建選項（你提供的中文名稱與檔名）
+    
+    var OPTIONS_FALLBACK = [
+      {"id":1, "name":"箱子",   "image":"images/箱子.png"},
+      {"id":2, "name":"沙發",   "image":"images/沙發.png"},
+      {"id":3, "name":"時鐘",   "image":"images/時鐘.png"},
+      {"id":4, "name":"播放機", "image":"images/播放機.png"},
+      {"id":5, "name":"鏡子",   "image":"images/鏡子.png"},
+      {"id":6, "name":"櫃子",   "image":"images/櫃子.png"},
+      {"id":7, "name":"鋼琴",   "image":"images/鋼琴.png"},
+      {"id":8, "name":"號角手", "image":"images/號角手.png"},
+      {"id":9, "name":"床",     "image":"images/床.png"}
+    ];
+
+    var themeKey = 'mc_theme';
+    function applyTheme(t){
+      document.documentElement.setAttribute('data-theme', t==='light' ? 'light' : 'dark');
+      var icon = document.getElementById('themeIcon');
+      var text = document.getElementById('themeText');
+      if(icon) icon.textContent = t==='light' ? '☀️' : '🌙';
+      if(text) text.textContent = t==='light' ? '淺色' : '深色';
+      try { localStorage.setItem(themeKey, t); } catch(e) {}
+    }
+    var savedTheme = null;
+    try { savedTheme = localStorage.getItem(themeKey); } catch(e) { savedTheme = null; }
+    applyTheme(savedTheme || 'dark');
+    var themeBtn = document.getElementById('themeToggle');
+    if(themeBtn){
+      themeBtn.addEventListener('click', function(){
+        var cur = document.documentElement.getAttribute('data-theme')==='light' ? 'light' : 'dark';
+        applyTheme(cur==='light' ? 'dark' : 'light');
+      });
+    }
+
+    var POSITIONS = [
+      ['左上','中上','右上'],
+      ['左中','中','右中'],
+      ['左下','中下','右下']
+    ];
+
+    function htmlEscape(str){ return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+    function optionSelectHTML(options){
+      var out = '<option value=""></option>';
+      for(var i=0;i<options.length;i++){
+        var n = options[i].name;
+        out += '<option value="' + htmlEscape(n) + '">' + htmlEscape(n) + '</option>';
+      }
+      return out;
+    }
+
+    var gridKey = 'mc_grid';
+    function loadGrid(){
+      try { return JSON.parse(localStorage.getItem(gridKey)||'null') || new Array(9).fill(''); }
+      catch(e){ return new Array(9).fill(''); }
+    }
+    function saveGrid(names){ try { localStorage.setItem(gridKey, JSON.stringify(names)); } catch(e){} }
+    function clearGrid(){ try { localStorage.removeItem(gridKey); } catch(e){} }
+
+    function setCellImage(imgEl, name, options){
+      var found = null;
+      for(var i=0;i<options.length;i++){ if(options[i].name===name){ found = options[i]; break; } }
+      if(!found || !found.image){ imgEl.src=''; imgEl.style.display='none'; return; }
+      imgEl.src = found.image; imgEl.style.display='block';
+    }
+
+    function renderWithOptions(options){
+      var grid = document.getElementById('grid');
+      if(!grid) return;
+      var saved = loadGrid();
+      grid.innerHTML='';
+      var idx=0;
+      for(var r=0;r<3;r++){
+        for(var c=0;c<3;c++){
+          var wrap = document.createElement('div');
+          wrap.className='cell';
+          var title = document.createElement('div');
+          title.className='title';
+          title.textContent = POSITIONS[r][c];
+
+          var imgbox = document.createElement('div');
+          imgbox.className='imgbox';
+          var img = document.createElement('img');
+          img.alt='';
+          imgbox.appendChild(img);
+
+          var picker = document.createElement('div');
+          picker.className='picker';
+          picker.innerHTML = '<select>' + optionSelectHTML(options) + '</select>';
+          var sel = picker.querySelector('select');
+          sel.addEventListener('change', function(selRef, imgRef){
+            return function(){
+              setCellImage(imgRef, selRef.value, options);
+              var names = Array.prototype.map.call(document.querySelectorAll('.cell select'), function(s){ return s.value||''; });
+              saveGrid(names);
+            }
+          }(sel, img));
+
+          if(saved[idx]) sel.value = saved[idx];
+          setCellImage(img, sel.value, options);
+
+          wrap.appendChild(title);
+          wrap.appendChild(imgbox);
+          wrap.appendChild(picker);
+          grid.appendChild(wrap);
+          idx++;
+        }
+      }
+    }
+
+    function init(){
+      if(location.protocol==='http:' || location.protocol==='https:'){
+        // 嘗試從同資料夾讀 options.json
+        fetch('options.json', {cache:'no-cache'})
+          .then(function(res){ if(!res.ok) throw new Error('read options.json failed'); return res.json(); })
+          .then(function(data){ if(!Array.isArray(data) || data.length!==9) throw new Error('bad options.json'); renderWithOptions(data); })
+          .catch(function(){ renderWithOptions(OPTIONS_FALLBACK); });
+      } else {
+        //內建
+        renderWithOptions(OPTIONS_FALLBACK);
+      }
+    }
+
+    var clearBtn = document.getElementById('clear');
+    if(clearBtn){
+      clearBtn.addEventListener('click', function(){
+        var selects = document.querySelectorAll('.cell select');
+        for(var i=0;i<selects.length;i++){ selects[i].value=''; }
+        var imgs = document.querySelectorAll('.cell img');
+        for(var j=0;j<imgs.length;j++){ imgs[j].src=''; imgs[j].style.display='none'; }
+        clearGrid();
+      });
+    }
+
+    // 啟動
+    init();
+  </script>
+</body>
+</html>
